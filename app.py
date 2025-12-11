@@ -1,25 +1,26 @@
 from flask import Flask, request
 import requests
 import json
+import os  # <--- IMPORTANTE: Necesario para leer las variables de Render
 
 app = Flask(__name__)
 
 # ===============================================================
-#  TUS DATOS REALES
+#  CONFIGURACIÓN DE ENTORNO (VARIABLES OCULTAS)
 # ===============================================================
-VERIFY_TOKEN = "vts_token_seguro_2025"
-WHATSAPP_TOKEN = "EAAa9zz1LCTYBQHJFZCL3RwMxJRflj3HeWC4iJZAvctjOZBZAQyGv5QlJ83fo4TEYcQYwMHZAqSXlumdJXCVU9ZBMZBrDJZApTjkMZCg5jZBS8RHT74mAUm4ZAhgS0PZCQY3j9ZBRAWAKcmXy0XDwLtN1ZBeFdIJz8KxAYZCMb5edI7l8YxioVTfJ6juS8x8WYi1UeTgJtDCtjCZA2ZC5gP85CSYUIZBaTwWGtFPCFsMUPKZAmcgoHZBR0J8OZCHYPWgXhMTj5P1DWYum9mVefPasLW7yOQOP1mHT6PvMtnAZDZD"
-PHONE_NUMBER_ID = "838773422662354"
+# Ahora el código busca estos valores en la configuración de Render.
+# Asegúrate de que en Render las llames EXACTAMENTE así:
+VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
+WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
+PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 # ===============================================================
 
 # 🧠 MEMORIA A CORTO PLAZO (DICCIONARIO)
-# Aquí guardaremos el estado de cada usuario.
-# Ejemplo: { '52181...': 'ESPERANDO_NOMBRE' }
 MEMORIA = {}
 
 # --- CARGAMOS EL MENÚ ---
 try:
-    with open('datos.json', 'r', encoding='utf-8') as f:
+    with open('datg.json', 'r', encoding='utf-8') as f:
         DATOS_NEGOCIO = json.load(f)
     print("✅ Datos cargados.", flush=True)
 except:
@@ -50,11 +51,13 @@ def enviar_mensaje_imagen(telefono, link_imagen, caption):
 # --- VERIFICACIÓN ---
 @app.route('/webhook', methods=['GET'])
 def verificar_token():
+    # Meta envía el token en la URL, nosotros lo comparamos con el de Render
     mode = request.args.get('hub.mode')
     token = request.args.get('hub.verify_token')
+    
     if mode == 'subscribe' and token == VERIFY_TOKEN:
         return request.args.get('hub.challenge'), 200
-    return "Error", 400
+    return "Error de Verificación", 403
 
 # --- RECEPCIÓN DE MENSAJES ---
 @app.route('/webhook', methods=['POST'])
@@ -94,23 +97,17 @@ def recibir_mensajes():
                 # --- FLUJO: AGENDAR CITA ---
                 
                 if estado_actual == 'ESPERANDO_NOMBRE':
-                    # El usuario acaba de enviar su nombre
-                    MEMORIA[numero] = 'ESPERANDO_SERVICIO' # Avanzamos estado
-                    # Guardamos el nombre en una variable temporal (podría ser BD)
-                    # Por ahora solo respondemos:
+                    MEMORIA[numero] = 'ESPERANDO_SERVICIO' 
                     enviar_mensaje_botones(numero, f"Gusto en saludarte, {texto_usuario.capitalize()}. ¿Qué servicio te interesa?", ["Consultoría", "Desarrollo Web", "Soporte"])
                 
                 elif estado_actual == 'ESPERANDO_SERVICIO':
-                    # El usuario acaba de elegir el servicio
                     enviar_mensaje_texto(numero, f"¡Perfecto! Hemos agendado una cita para: {texto_usuario.capitalize()}.\nNos pondremos en contacto pronto.")
-                    # Reiniciamos el estado a INICIO
                     MEMORIA[numero] = 'INICIO'
 
                 # --- FLUJO NORMAL (MENÚ PRINCIPAL) ---
                 else:
-                    # Comandos globales
                     if "agendar" in texto_usuario or "cita" in texto_usuario:
-                        MEMORIA[numero] = 'ESPERANDO_NOMBRE' # Cambiamos estado
+                        MEMORIA[numero] = 'ESPERANDO_NOMBRE'
                         enviar_mensaje_texto(numero, "📝 Para agendar, primero necesito tu nombre completo. ¿Cómo te llamas?")
                     
                     elif "hola" in texto_usuario or "menu" in texto_usuario:
@@ -132,4 +129,6 @@ def recibir_mensajes():
         return "EVENT_RECEIVED", 200
 
 if __name__ == '__main__':
-    app.run(port=3000, debug=True)
+    # Usamos el puerto que diga el sistema o el 3000 por defecto
+    port = int(os.environ.get("PORT", 3000))
+    app.run(host='0.0.0.0', port=port, debug=True)
