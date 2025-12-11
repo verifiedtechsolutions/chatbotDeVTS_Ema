@@ -1,13 +1,16 @@
 from flask import Flask, request
 import requests
 import os
+import json
 from supabase import create_client, Client
 from openai import OpenAI
+from datetime import datetime
+import pytz
 
 app = Flask(__name__)
 
 # ===============================================================
-#  1. CONFIGURACIÓN
+#  1. CONFIGURACIÓN Y CREDENCIALES
 # ===============================================================
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
@@ -22,39 +25,55 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 client_ai = OpenAI(api_key=OPENAI_API_KEY)
 
 # ===============================================================
-#  2. PROMPT DEL SISTEMA (SANDBOX VTS)
+#  2. DEFINICIÓN DE IDENTIDAD CORPORATIVA (System Prompt) ⚖️
 # ===============================================================
+# Aquí se define la personalidad formal y los datos reales del negocio.
+
 SYSTEM_PROMPT = """
-Eres el asistente de 'VTS Demo'. 
-Responde dudas sobre servicios tecnológicos basándote en el contexto de la charla.
+Eres el Asistente Virtual Oficial de 'Verified Tech Solutions' (VTS).
+Tu función es brindar atención comercial preliminar sobre soluciones de Inteligencia Artificial y Ciencia de Datos.
 
-DATOS:
-- Consultoría: $50 USD.
-- Web: $300 USD.
-- Soporte: $20/h.
+DIRECTRICES DE TONO Y PERSONALIDAD:
+- Tu tono debe ser **FORMAL, PROFESIONAL Y DISTANTE PERO CORTÉS** (similar a un abogado o consultor senior).
+- Evita el uso excesivo de exclamaciones o emojis, salvo en los menús predefinidos.
+- Utiliza un vocabulario preciso y técnico.
+- No prometas disponibilidad inmediata fuera de los horarios establecidos.
 
-REGLAS:
-- Sé breve y amable.
-- Si preguntan precios, dalos.
-- Si el usuario se refiere a algo anterior (ej: "eso", "el primero"), usa el historial para entender.
+INFORMACIÓN DEL NEGOCIO (VTS):
+1.  **Giro:** Desarrollo de soluciones de IA, Ciencia de Datos y Chatbots Empresariales.
+2.  **Producto Estrella (Chatbots):**
+    -   Ofrecemos "Sistemas de Atención Automatizada 24/7" (Chatbots IA).
+    -   **Inversión Inicial:** Planes desde $4,500 MXN mensuales (Estrategia de penetración).
+    -   **Beneficio:** Reducción de carga operativa y atención inmediata.
+3.  **Modalidad:** Los servicios se prestan en modalidad 100% remota.
+
+HORARIOS DE ATENCIÓN ADMINISTRATIVA (Zona Horaria México):
+-   Lunes y Martes: 12:00 a 17:00 horas.
+-   Miércoles a Viernes: 10:00 a 17:30 horas.
+-   Fines de Semana: Sin atención administrativa.
+*Nota: Si el usuario solicita contacto fuera de este horario, infórmale formalmente que su solicitud será procesada en el siguiente bloque hábil.*
+
+REGLAS DE INTERACCIÓN:
+1.  Si preguntan precios, cita el plan base de $4,500 MXN como "inversión inicial sugerida".
+2.  Si solicitan una reunión, invítalos a usar el botón 'Agendar Cita' para formalizar la solicitud.
+3.  Mantén las respuestas concisas (máximo 60 palabras) para facilitar la lectura en móviles.
 """
 
 # ===============================================================
-#  3. FUNCIONES DE MEMORIA (NUEVO) 🧠
+#  3. GESTIÓN DE MEMORIA (Supabase) 🧠
 # ===============================================================
 
 def guardar_mensaje(telefono, rol, contenido):
-    """Guarda un mensaje en Supabase (user o assistant)."""
+    """Registra la interacción en la base de datos para fines de auditoría y contexto."""
     try:
         data = {"telefono": telefono, "rol": rol, "contenido": contenido}
         supabase.table("mensajes").insert(data).execute()
     except Exception as e:
-        print(f"⚠️ Error guardando memoria: {e}")
+        print(f"Error de registro en DB: {e}")
 
 def obtener_historial(telefono, limite=6):
-    """Recupera los últimos N mensajes para dar contexto a la IA."""
+    """Recupera el contexto reciente de la conversación."""
     try:
-        # Traemos los últimos mensajes ordenados por fecha
         response = supabase.table("mensajes")\
             .select("rol, contenido")\
             .eq("telefono", telefono)\
@@ -62,39 +81,30 @@ def obtener_historial(telefono, limite=6):
             .limit(limite)\
             .execute()
         
-        # Supabase los devuelve del más nuevo al más viejo, hay que invertirlos
         historial = response.data[::-1] 
-        
-        # Formateamos para OpenAI
-        mensajes_formateados = [{"role": m["rol"], "content": m["contenido"]} for m in historial]
-        return mensajes_formateados
+        return [{"role": m["rol"], "content": m["contenido"]} for m in historial]
     except Exception as e:
-        print(f"⚠️ Error leyendo memoria: {e}")
         return []
 
 # ===============================================================
-#  4. CEREBRO IA (CON MEMORIA)
+#  4. INTELIGENCIA ARTIFICIAL (OpenAI)
 # ===============================================================
 def consultar_chatgpt(historial_chat):
-    """Envía el historial completo a OpenAI."""
     try:
-        # 1. Ponemos el System Prompt primero
         mensajes_para_enviar = [{"role": "system", "content": SYSTEM_PROMPT}]
-        
-        # 2. Le pegamos el historial de la conversación
         mensajes_para_enviar.extend(historial_chat)
         
         completion = client_ai.chat.completions.create(
             model="gpt-4o-mini",
-            messages=mensajes_para_enviar
+            messages=mensajes_para_enviar,
+            temperature=0.3 # Temperatura baja para ser más formal y menos "creativo"
         )
         return completion.choices[0].message.content
     except Exception as e:
-        print(f"Error OpenAI: {e}")
-        return "Disculpa, me perdí un poco. ¿Podrías repetir?"
+        return "Estimado usuario, momentáneamente presento una intermitencia en mis sistemas de procesamiento. Por favor, intente nuevamente en breve."
 
 # ===============================================================
-#  5. FUNCIONES DB USUARIO & ENVÍO
+#  5. FUNCIONES AUXILIARES
 # ===============================================================
 def obtener_usuario(telefono):
     try:
@@ -130,7 +140,7 @@ def enviar_botones(telefono, texto, botones):
     requests.post(url, headers=headers, json=data)
 
 # ===============================================================
-#  6. WEBHOOK PRINCIPAL
+#  6. CONTROLADOR PRINCIPAL (Webhook)
 # ===============================================================
 @app.route('/webhook', methods=['GET'])
 def verificar():
@@ -152,10 +162,10 @@ def recibir():
                 numero = message["from"]
                 if numero.startswith("521"): numero = numero.replace("521", "52", 1)
 
-                usuario = obtener_usuario(numero) # Asegura que el cliente exista
+                usuario = obtener_usuario(numero)
                 estado = usuario.get("estado_flujo", "INICIO")
 
-                # --- EXTRAER TEXTO ---
+                # --- EXTRACCIÓN DEL MENSAJE ---
                 texto = ""
                 es_boton = False
                 if message["type"] == "text":
@@ -164,51 +174,50 @@ def recibir():
                     texto = message["interactive"]["button_reply"]["title"]
                     es_boton = True
 
-                print(f"📩 {numero}: {texto}")
+                print(f"📩 VTS | {numero}: {texto}")
 
-                # --- CASO 1: FLUJO DE CITAS (Sin IA) ---
+                # --- MÁQUINA DE ESTADOS (Lógica de Negocio) ---
+
+                # CASO 1: CAPTURA DE NOMBRE PARA CITA
                 if estado == 'ESPERANDO_NOMBRE':
-                    # Aquí NO guardamos en memoria de chat para no ensuciarla con datos logísticos
                     actualizar_estado(numero, 'INICIO', nombre=texto)
-                    enviar_botones(numero, f"Gracias {texto}. ¿Cómo te ayudo?", ["Precios", "Hablar con IA", "Agendar"])
+                    # Respuesta formal
+                    enviar_botones(numero, f"Agradezco la información, {texto}. Procederemos con su solicitud. ¿Cómo desea continuar?", ["Ver Servicios", "Consultar Costos", "Solicitar Asesoría"])
                     return "OK", 200
 
-                # --- CASO 2: MENSAJE NORMAL (Con IA) ---
-                if not es_boton:
-                    # A) Guardamos lo que dijo el usuario
+                # CASO 2: BOTONES (Navegación Rápida)
+                if es_boton:
+                    if "Costos" in texto or "Precios" in texto:
+                        # Respuesta basada en tu archivo planRefinado.txt
+                        enviar_mensaje(numero, "Nuestra inversión inicial para Chatbots IA comienza en $4,500 MXN mensuales. Esto incluye infraestructura y mantenimiento.")
+                    elif "Asesoría" in texto or "Agendar" in texto:
+                        actualizar_estado(numero, 'ESPERANDO_NOMBRE')
+                        enviar_mensaje(numero, "Para formalizar su solicitud de asesoría, requiero que me proporcione su nombre completo:")
+                    elif "Servicios" in texto:
+                        enviar_mensaje(numero, "Verified Tech Solutions se especializa en:\n1. Chatbots con IA.\n2. Ciencia de Datos.\n3. Automatización de Procesos.")
+                    else:
+                        enviar_mensaje(numero, "Entendido. Procesando su selección.")
+                    
+                    guardar_mensaje(numero, "user", f"[Selección: {texto}]")
+
+                # CASO 3: CONSULTA ABIERTA (Inteligencia Artificial)
+                else:
+                    # Guardamos
                     guardar_mensaje(numero, "user", texto)
-                    
-                    # B) Recuperamos contexto
+                    # Pensamos (Con contexto)
                     historial = obtener_historial(numero)
-                    
-                    # C) Consultamos a la IA con contexto
                     respuesta_ia = consultar_chatgpt(historial)
-                    
-                    # D) Enviamos y guardamos la respuesta
+                    # Respondemos
                     enviar_mensaje(numero, respuesta_ia)
                     guardar_mensaje(numero, "assistant", respuesta_ia)
 
-                # --- CASO 3: BOTONES ---
-                else:
-                    # Los botones rompen el flujo de chat, así que reiniciamos contexto o respondemos directo
-                    if "Precios" in texto:
-                        enviar_mensaje(numero, "💰 Consultoría: $50 | Web: $300 | Soporte: $20/h")
-                    elif "Agendar" in texto:
-                        actualizar_estado(numero, 'ESPERANDO_NOMBRE')
-                        enviar_mensaje(numero, "¿A nombre de quién registro la cita?")
-                    elif "IA" in texto:
-                        enviar_mensaje(numero, "Soy todo oídos. ¿Qué necesitas saber?")
-                    
-                    # Opcional: Guardar también la acción del botón en el historial
-                    guardar_mensaje(numero, "user", f"[Presionó botón: {texto}]")
-
             return "EVENT_RECEIVED", 200
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error Crítico: {e}")
         return "EVENT_RECEIVED", 200
 
 @app.route("/")
-def home(): return "Bot VTS con Memoria Activo 🧠💾", 200
+def home(): return "Servidor VTS Operativo [Producción]", 200
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 3000))
