@@ -1,0 +1,10 @@
+{
+    "mensaje_bienvenida": "👋 ¡Hola! Bienvenido a nuestro servicio de asistencia automatizada.",
+    "mensaje_error": "⚠️ Lo siento, no entendí ese comando. Escribe 'Hola' para ver el menú.",
+    "respuesta_ubicacion": "📍 Nos encontramos en Av. Principal #123, Ciudad de México.",
+    "respuesta_precios": {
+        "imagen": "https://via.placeholder.com/800x400.png?text=Nuestros+Precios",
+        "caption": "Aquí tienes nuestra lista de precios actualizada 💰"
+    },
+    "botones_menu": ["💰 Precios", "📍 Ubicación", "📅 Agendar Cita"]
+}
