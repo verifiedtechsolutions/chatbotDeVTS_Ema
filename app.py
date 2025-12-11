@@ -1,16 +1,14 @@
 from flask import Flask, request
 import requests
 import os
-import json
 from supabase import create_client, Client
 from openai import OpenAI
-from datetime import datetime
-import pytz
+import json
 
 app = Flask(__name__)
 
 # ===============================================================
-#  1. CONFIGURACIÓN Y CREDENCIALES
+#  CONFIGURACIÓN
 # ===============================================================
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
@@ -25,104 +23,73 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 client_ai = OpenAI(api_key=OPENAI_API_KEY)
 
 # ===============================================================
-#  2. DEFINICIÓN DE IDENTIDAD CORPORATIVA (System Prompt) ⚖️
+#  IMÁGENES Y RECURSOS (Punto 7) 🖼️
 # ===============================================================
-# Aquí se define la personalidad formal y los datos reales del negocio.
+# Aquí pones el link directo de tu imagen promocional (debe terminar en .jpg o .png)
+# Puedes subirla a "Supabase Storage" y obtener la URL pública.
+URL_IMAGEN_PROMO = "https://images.unsplash.com/photo-1531482615713-2afd69097998?q=80&w=2070&auto=format&fit=crop"
 
+# ===============================================================
+#  SYSTEM PROMPT "ESTÉTICO" (Punto 2) 🎨
+# ===============================================================
 SYSTEM_PROMPT = """
-Eres el Asistente Virtual Oficial de 'Verified Tech Solutions' (VTS).
-Tu función es brindar atención comercial preliminar sobre soluciones de Inteligencia Artificial y Ciencia de Datos.
+Eres el Asistente Virtual de 'Verified Tech Solutions' (VTS).
+Tu objetivo es vender soluciones de Chatbots IA y Ciencia de Datos.
 
-DIRECTRICES DE TONO Y PERSONALIDAD:
-- Tu tono debe ser **FORMAL, PROFESIONAL Y DISTANTE PERO CORTÉS** (similar a un abogado o consultor senior).
-- Evita el uso excesivo de exclamaciones o emojis, salvo en los menús predefinidos.
-- Utiliza un vocabulario preciso y técnico.
-- No prometas disponibilidad inmediata fuera de los horarios establecidos.
+REGLAS DE FORMATO (ESTRICTO):
+1. Usa **negritas** para resaltar precios y conceptos clave (Ej: **$4,500 MXN**).
+2. Usa emojis profesionales para dar estructura (📌, 💡, 🚀, 💰, ✅).
+3. Si listas servicios, usa listas con viñetas o guiones.
+4. Mantén los párrafos cortos y legibles.
 
-INFORMACIÓN DEL NEGOCIO (VTS):
-1.  **Giro:** Desarrollo de soluciones de IA, Ciencia de Datos y Chatbots Empresariales.
-2.  **Producto Estrella (Chatbots):**
-    -   Ofrecemos "Sistemas de Atención Automatizada 24/7" (Chatbots IA).
-    -   **Inversión Inicial:** Planes desde $4,500 MXN mensuales (Estrategia de penetración).
-    -   **Beneficio:** Reducción de carga operativa y atención inmediata.
-3.  **Modalidad:** Los servicios se prestan en modalidad 100% remota.
+DATOS DEL NEGOCIO:
+- Producto: Chatbots con IA para WhatsApp.
+- Precio Base: **$4,500 MXN/mes** (Inversión Inicial).
+- Beneficio: Atención 24/7 y reducción de carga operativa.
+- Horario: Lun-Vie (Consultar disponibilidad específica).
 
-HORARIOS DE ATENCIÓN ADMINISTRATIVA (Zona Horaria México):
--   Lunes y Martes: 12:00 a 17:00 horas.
--   Miércoles a Viernes: 10:00 a 17:30 horas.
--   Fines de Semana: Sin atención administrativa.
-*Nota: Si el usuario solicita contacto fuera de este horario, infórmale formalmente que su solicitud será procesada en el siguiente bloque hábil.*
-
-REGLAS DE INTERACCIÓN:
-1.  Si preguntan precios, cita el plan base de $4,500 MXN como "inversión inicial sugerida".
-2.  Si solicitan una reunión, invítalos a usar el botón 'Agendar Cita' para formalizar la solicitud.
-3.  Mantén las respuestas concisas (máximo 60 palabras) para facilitar la lectura en móviles.
+Si te preguntan algo fuera de tu tema, responde cortésmente que solo hablas de soluciones VTS.
 """
 
 # ===============================================================
-#  3. GESTIÓN DE MEMORIA (Supabase) 🧠
+#  FUNCIONES (Supabase, OpenAI, Envíos)
 # ===============================================================
-
 def guardar_mensaje(telefono, rol, contenido):
-    """Registra la interacción en la base de datos para fines de auditoría y contexto."""
     try:
-        data = {"telefono": telefono, "rol": rol, "contenido": contenido}
-        supabase.table("mensajes").insert(data).execute()
-    except Exception as e:
-        print(f"Error de registro en DB: {e}")
+        supabase.table("mensajes").insert({"telefono": telefono, "rol": rol, "contenido": contenido}).execute()
+    except: pass
 
-def obtener_historial(telefono, limite=6):
-    """Recupera el contexto reciente de la conversación."""
+def obtener_historial(telefono):
     try:
-        response = supabase.table("mensajes")\
-            .select("rol, contenido")\
-            .eq("telefono", telefono)\
-            .order("created_at", desc=True)\
-            .limit(limite)\
-            .execute()
-        
-        historial = response.data[::-1] 
-        return [{"role": m["rol"], "content": m["contenido"]} for m in historial]
-    except Exception as e:
-        return []
+        resp = supabase.table("mensajes").select("rol, contenido").eq("telefono", telefono).order("created_at", desc=True).limit(6).execute()
+        return [{"role": m["rol"], "content": m["contenido"]} for m in resp.data[::-1]]
+    except: return []
 
-# ===============================================================
-#  4. INTELIGENCIA ARTIFICIAL (OpenAI)
-# ===============================================================
-def consultar_chatgpt(historial_chat):
+def consultar_chatgpt(historial):
     try:
-        mensajes_para_enviar = [{"role": "system", "content": SYSTEM_PROMPT}]
-        mensajes_para_enviar.extend(historial_chat)
-        
-        completion = client_ai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=mensajes_para_enviar,
-            temperature=0.3 # Temperatura baja para ser más formal y menos "creativo"
-        )
-        return completion.choices[0].message.content
-    except Exception as e:
-        return "Estimado usuario, momentáneamente presento una intermitencia en mis sistemas de procesamiento. Por favor, intente nuevamente en breve."
+        msgs = [{"role": "system", "content": SYSTEM_PROMPT}] + historial
+        # Temperature 0.5 para balancear creatividad y precisión
+        resp = client_ai.chat.completions.create(model="gpt-4o-mini", messages=msgs, temperature=0.5)
+        return resp.choices[0].message.content
+    except: return "⚠️ Error de conexión neuronal."
 
-# ===============================================================
-#  5. FUNCIONES AUXILIARES
-# ===============================================================
 def obtener_usuario(telefono):
     try:
-        response = supabase.table("clientes").select("*").eq("telefono", telefono).execute()
-        if len(response.data) > 0: return response.data[0]
-        else:
-            nuevo = {"telefono": telefono, "estado_flujo": "INICIO"}
-            supabase.table("clientes").insert(nuevo).execute()
-            return nuevo
+        res = supabase.table("clientes").select("*").eq("telefono", telefono).execute()
+        if res.data: return res.data[0]
+        nuevo = {"telefono": telefono, "estado_flujo": "INICIO"}
+        supabase.table("clientes").insert(nuevo).execute()
+        return nuevo
     except: return {"telefono": telefono, "estado_flujo": "INICIO"}
 
-def actualizar_estado(telefono, nuevo_estado, nombre=None):
+def actualizar_estado(telefono, estado, nombre=None):
     try:
-        data = {"estado_flujo": nuevo_estado}
+        data = {"estado_flujo": estado}
         if nombre: data["nombre"] = nombre
         supabase.table("clientes").update(data).eq("telefono", telefono).execute()
     except: pass
 
+# --- FUNCIONES DE ENVÍO DE WHATSAPP ---
 def enviar_mensaje(telefono, texto):
     url = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
@@ -139,8 +106,17 @@ def enviar_botones(telefono, texto, botones):
     }
     requests.post(url, headers=headers, json=data)
 
+def enviar_imagen(telefono, link, caption=""):
+    url = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
+    data = {
+        "messaging_product": "whatsapp", "to": telefono, "type": "image",
+        "image": {"link": link, "caption": caption}
+    }
+    requests.post(url, headers=headers, json=data)
+
 # ===============================================================
-#  6. CONTROLADOR PRINCIPAL (Webhook)
+#  WEBHOOK PRINCIPAL
 # ===============================================================
 @app.route('/webhook', methods=['GET'])
 def verificar():
@@ -153,72 +129,70 @@ def recibir():
     body = request.get_json()
     try:
         if body.get("object"):
-            entry = body["entry"][0]
-            changes = entry["changes"][0]
-            value = changes["value"]
-            
-            if "messages" in value:
-                message = value["messages"][0]
-                numero = message["from"]
+            entry = body["entry"][0]["changes"][0]["value"]
+            if "messages" in entry:
+                msg = entry["messages"][0]
+                numero = msg["from"]
                 if numero.startswith("521"): numero = numero.replace("521", "52", 1)
 
                 usuario = obtener_usuario(numero)
                 estado = usuario.get("estado_flujo", "INICIO")
 
-                # --- EXTRACCIÓN DEL MENSAJE ---
+                # Detectar contenido
                 texto = ""
                 es_boton = False
-                if message["type"] == "text":
-                    texto = message["text"]["body"]
-                elif message["type"] == "interactive":
-                    texto = message["interactive"]["button_reply"]["title"]
+                if msg["type"] == "text": texto = msg["text"]["body"]
+                elif msg["type"] == "interactive": 
+                    texto = msg["interactive"]["button_reply"]["title"]
                     es_boton = True
 
-                print(f"📩 VTS | {numero}: {texto}")
+                print(f"📩 {numero}: {texto}")
+                texto_lower = texto.lower()
 
-                # --- MÁQUINA DE ESTADOS (Lógica de Negocio) ---
+                # --- LÓGICA HÍBRIDA (MENU + IMÁGENES + IA) ---
 
-                # CASO 1: CAPTURA DE NOMBRE PARA CITA
-                if estado == 'ESPERANDO_NOMBRE':
-                    actualizar_estado(numero, 'INICIO', nombre=texto)
-                    # Respuesta formal
-                    enviar_botones(numero, f"Agradezco la información, {texto}. Procederemos con su solicitud. ¿Cómo desea continuar?", ["Ver Servicios", "Consultar Costos", "Solicitar Asesoría"])
+                # 1. SI ES UN SALUDO -> Mandamos Imagen + Menú (Punto 1)
+                if "hola" in texto_lower or "inicio" in texto_lower or "menu" in texto_lower or "menú" in texto_lower:
+                    # Primero la imagen (Promoción Mercantil)
+                    enviar_imagen(numero, URL_IMAGEN_PROMO, "🚀 *Bienvenido a Verified Tech Solutions*")
+                    # Luego los botones
+                    enviar_botones(numero, "Selecciona una opción o escribe tu duda directamente:", ["💰 Ver Precios", "📅 Agendar Cita", "🤖 Sobre Nosotros"])
                     return "OK", 200
 
-                # CASO 2: BOTONES (Navegación Rápida)
-                if es_boton:
-                    if "Costos" in texto or "Precios" in texto:
-                        # Respuesta basada en tu archivo planRefinado.txt
-                        enviar_mensaje(numero, "Nuestra inversión inicial para Chatbots IA comienza en $4,500 MXN mensuales. Esto incluye infraestructura y mantenimiento.")
-                    elif "Asesoría" in texto or "Agendar" in texto:
-                        actualizar_estado(numero, 'ESPERANDO_NOMBRE')
-                        enviar_mensaje(numero, "Para formalizar su solicitud de asesoría, requiero que me proporcione su nombre completo:")
-                    elif "Servicios" in texto:
-                        enviar_mensaje(numero, "Verified Tech Solutions se especializa en:\n1. Chatbots con IA.\n2. Ciencia de Datos.\n3. Automatización de Procesos.")
-                    else:
-                        enviar_mensaje(numero, "Entendido. Procesando su selección.")
-                    
-                    guardar_mensaje(numero, "user", f"[Selección: {texto}]")
+                # 2. CAPTURA DE DATOS (Nombre)
+                if estado == 'ESPERANDO_NOMBRE':
+                    actualizar_estado(numero, 'INICIO', nombre=texto)
+                    enviar_botones(numero, f"Gracias {texto}. ¿Cómo procedemos?", ["💰 Ver Precios", "📅 Agendar Cita"])
+                    return "OK", 200
 
-                # CASO 3: CONSULTA ABIERTA (Inteligencia Artificial)
+                # 3. BOTONES ESPECÍFICOS
+                if es_boton:
+                    if "Precios" in texto:
+                        # Aquí la IA ya sabe los precios, pero podemos forzar un formato bonito
+                        enviar_mensaje(numero, "💰 **Plan Inicial VTS:**\n\n- **$4,500 MXN/mes**\n- Atención 24/7\n- Infraestructura incluida\n\n¿Te interesa una demo?")
+                    elif "Agendar" in texto:
+                        actualizar_estado(numero, 'ESPERANDO_NOMBRE')
+                        enviar_mensaje(numero, "📝 Para coordinar la reunión, por favor escribe tu **nombre completo**:")
+                    elif "Sobre Nosotros" in texto:
+                        # Dejamos que la IA responda esto con su System Prompt
+                        historial = obtener_historial(numero)
+                        resp = consultar_chatgpt(historial)
+                        enviar_mensaje(numero, resp)
+                    
+                    guardar_mensaje(numero, "user", f"[Botón: {texto}]")
+
+                # 4. INTELIGENCIA ARTIFICIAL (Para todo lo demás)
                 else:
-                    # Guardamos
                     guardar_mensaje(numero, "user", texto)
-                    # Pensamos (Con contexto)
                     historial = obtener_historial(numero)
-                    respuesta_ia = consultar_chatgpt(historial)
-                    # Respondemos
-                    enviar_mensaje(numero, respuesta_ia)
-                    guardar_mensaje(numero, "assistant", respuesta_ia)
+                    resp = consultar_chatgpt(historial)
+                    enviar_mensaje(numero, resp)
+                    guardar_mensaje(numero, "assistant", resp)
 
             return "EVENT_RECEIVED", 200
     except Exception as e:
-        print(f"Error Crítico: {e}")
+        print(f"Error: {e}")
         return "EVENT_RECEIVED", 200
 
-@app.route("/")
-def home(): return "Servidor VTS Operativo [Producción]", 200
-
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 3000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 3000)))
